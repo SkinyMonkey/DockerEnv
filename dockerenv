@@ -1,0 +1,125 @@
+#!/bin/bash
+
+# FIXME
+#ENV_FOLDER=".env"
+ENV_FOLDER="."
+
+GLOBAL_CONFIG_FILE="$ENV_FOLDER/global.config";
+LOCAL_CONFIG_FILE="$ENV_FOLDER/local.config";
+
+source $GLOBAL_CONFIG_FILE;
+source $LOCAL_CONFIG_FILE;
+
+# FIXME : check var exists and filled?
+
+# -----------------------------------------------------------------------------
+
+function docker_command {
+    docker -H $DOCKER_HOST $@;
+}
+
+function docker_container_port {
+    docker_command port $DOCKER_CONTAINER $1;
+}
+
+function docker_container_running {
+    if [[ "$containers" == *"$DOCKER_CONTAINER"*  ]]; then
+       echo 1
+    else
+       echo 0
+    fi
+}
+
+function docker_mount_sshfs {
+    sshfs $USER@$DOCKER_HOST:$DISTANT_MOUNT_POINT $LOCAL_MOUNT_POINT
+          -p $(docker_container_port);
+}
+
+function dump_local_config {
+    echo "DOCKER_CONTAINER=$DOCKER_CONTAINER" > $LOCAL_CONFIG_FILE;
+    echo "LOCAL_MOUNT_POINT=$LOCAL_MOUNT_POINT" >> $LOCAL_CONFIG_FILE;
+}
+
+# -----------------------------------------------------------------------------
+
+version=$(docker_command version 2>&1);
+
+if [[ "$version"  = *"refused"* ]]; then 
+   echo "No docker server seems to run @ $DOCKER_HOST.";
+   exit -1;
+fi
+
+# -----------------------------------------------------------------------------
+
+case $1 in
+    ssh) 
+        if [[ docker_container_running == 1 ]]; then
+            ssh $USER@$DOCKER_HOST_ADDR -p `docker_container_port 22`
+        else
+           echo 'Container is not running';
+        fi
+    ;;
+
+    container)
+        case $2 in
+            start | stop | restart | logs | attach)
+                docker_command $2 $DOCKER_CONTAINER ;;
+            commit) 
+                shift; # FIXME : test?
+                new_image=$(docker_command commit $DOCKER_CONTAINER $@) ;;
+                # FIXME : what to do with this image
+            running)
+                echo -n "The container $DOCKER_CONTAINER is "
+                if [[ docker_container_running == 0 ]]; then echo -n "not "; fi
+                echo "running"
+                ;;
+            *) echo "Unknown container command : $2" ;;
+        esac
+    ;;
+
+    mount)
+        mount_sshfs
+    ;;
+
+    begin)
+        is_running=$(docker_container_running);
+
+        if [[ is_running == 0 ]]; then
+            docker_container_control start;
+        fi
+
+        mount_sshfs
+    ;;
+
+    clone)
+        # if $1 empty
+        BUILD_PATH='.';
+    
+        # if $2 empty
+        STEP_TAG='dev';
+    
+        docker_command build -t $IMAGE_NAME:$STEP_TAG $BUILD_PATH;
+        # FIXME : get IMAGE_SHA from build -> docker-py sed technique
+
+        # FIXME add volumes from conf etc
+        # FIXME add a function to build a string with -p $port for each port in PORTS
+        DOCKER_CONTAINER=$(docker_command run -d -p 22 -t $IMAGE_NAME:$STEP_TAG);
+
+        # FIXME checker si point de montage existe avec mkdir?
+        #    mount_sshfs;
+
+        dump_local_config;
+    ;;
+
+    init)
+        mkdir $ENV_FOLDER;
+        # FIXME : copier fichiers dedans
+        # deux dossiers : un dev, un prod, pour chaque env
+        # copier fichier dans dossiers choisis dans la conf globale
+        # donner des indications dedans sur quoi modifier et comment
+    ;;
+
+    *)
+        echo 'usage : dockerenv'
+    ;;
+esac
