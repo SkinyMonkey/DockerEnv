@@ -23,21 +23,34 @@ function docker_container_port {
 }
 
 function docker_container_running {
+    containers=$(docker_command ps)
+
     if [[ "$containers" == *"$DOCKER_CONTAINER"*  ]]; then
        echo 1
     else
        echo 0
     fi
-}
+};
 
 function docker_mount_sshfs {
-    sshfs $USER@$DOCKER_HOST:$DISTANT_MOUNT_POINT $LOCAL_MOUNT_POINT
-          -p $(docker_container_port);
+    if [[ ! -f $SSHFS_MOUNT_POINT ]]; then
+        mkdir $SSHFS_MOUNT_POINT;
+    fi
+
+    sshfs $USER@$DOCKER_HOST:$DISTANT_MOUNT_POINT $SSHFS_MOUNT_POINT \
+        -p $(docker_container_port $SSH_PORT);
 }
 
 function dump_local_config {
     echo "DOCKER_CONTAINER=$DOCKER_CONTAINER" > $LOCAL_CONFIG_FILE;
-    echo "LOCAL_MOUNT_POINT=$LOCAL_MOUNT_POINT" >> $LOCAL_CONFIG_FILE;
+    echo "SSHFS_MOUNT_POINT=$SSHFS_MOUNT_POINT" >> $LOCAL_CONFIG_FILE;
+}
+
+function port_list {
+    for port in "$@"; do
+        clean_port=$(echo $port | sed s/,//)
+        echo -n " -p $clean_port";
+    done
 }
 
 # -----------------------------------------------------------------------------
@@ -50,11 +63,11 @@ if [[ "$version"  = *"refused"* ]]; then
 fi
 
 # -----------------------------------------------------------------------------
-
+    
 case $1 in
     ssh) 
-        if [[ docker_container_running == 1 ]]; then
-            ssh $USER@$DOCKER_HOST_ADDR -p `docker_container_port 22`
+        if [[ `docker_container_running` == 1 ]]; then
+            ssh $USER@$DOCKER_HOST_ADDR -p `docker_container_port $SSH_PORT`
         else
            echo 'Container is not running';
         fi
@@ -78,7 +91,7 @@ case $1 in
     ;;
 
     mount)
-        mount_sshfs
+        docker_mount_sshfs;
     ;;
 
     begin)
@@ -88,25 +101,42 @@ case $1 in
             docker_container_control start;
         fi
 
-        mount_sshfs
+        docker_mount_sshfs;
     ;;
 
     clone)
-        # if $1 empty
-        BUILD_PATH='.';
+        if [[ -z "$2" ]]; then
+            BUILD_PATH='.';
+        else
+            BUILD_PATH=$2;
+        fi
     
-        # if $2 empty
-        STEP_TAG='dev';
-    
-        docker_command build -t $IMAGE_NAME:$STEP_TAG $BUILD_PATH;
-        # FIXME : get IMAGE_SHA from build -> docker-py sed technique
+        if [[ -z "$3" ]]; then
+            STEP_TAG='dev';
+        else
+            STEP_TAG=$3;
+        fi
+
+        log=$(docker_command build -t $IMAGE_NAME:$STEP_TAG $BUILD_PATH);
+        
+        echo "$log";
+
+        last_line=$(echo $log | grep 'Successfully built');
+
+        if [[ -z "$last_line" ]]; then
+            echo "The build failed : exiting.";
+            exit;
+        fi
+
+        IMAGE_SHA=${last_line##* }
 
         # FIXME add volumes from conf etc
-        # FIXME add a function to build a string with -p $port for each port in PORTS
-        DOCKER_CONTAINER=$(docker_command run -d -p 22 -t $IMAGE_NAME:$STEP_TAG);
 
-        # FIXME checker si point de montage existe avec mkdir?
-        #    mount_sshfs;
+        ports=$(port_list $CONTAINER_PORTS);
+
+        DOCKER_CONTAINER=$(docker_command run -d $ports -t $IMAGE_NAME:$STEP_TAG);
+
+        docker_mount_sshfs;
 
         dump_local_config;
     ;;
